@@ -15,9 +15,9 @@ MFDS(식약처) 의약품 허가정보, HIRA(심평원) 약가정보 API 클라�
 import requests
 from urllib.parse import unquote
 
-MFDS_LIST_URL = "http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq07"
-MFDS_DETAIL_URL = "http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnDtlInq06"
-HIRA_PRICE_URL = "http://apis.data.go.kr/B551182/dgamtInsrncListInfoInqireService/getDgamtList"
+MFDS_LIST_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq07"
+MFDS_DETAIL_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnDtlInq06"
+HIRA_PRICE_URL = "https://apis.data.go.kr/B551182/dgamtInsrncListInfoInqireService/getDgamtList"
 
 DEFAULT_TIMEOUT = 15
 
@@ -36,22 +36,36 @@ def _decode_key(service_key: str) -> str:
 
 def _request_xml_or_json(url: str, params: dict) -> dict:
     resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
-    resp.raise_for_status()
+
+    # data.go.kr은 오류 시에도 본문(XML/JSON)에 resultCode/resultMsg를 실어 보내는 경우가 많다.
+    # HTTP 상태코드만 보고 raise_for_status()를 먼저 호출하면 그 본문을 못 보고 예외가 나버리므로,
+    # 상태코드와 무관하게 먼저 본문 파싱을 시도해서 실제 사유를 노출한다.
+    body_preview = resp.text.strip()[:500]
     ctype = resp.headers.get("Content-Type", "")
 
-    if "json" in ctype or resp.text.strip().startswith("{"):
-        data = resp.json()
-        header = (data.get("response", {}) or {}).get("header", {}) or data.get("header", {})
-    else:
-        import xmltodict
-        data = xmltodict.parse(resp.text)
-        header = (((data.get("response") or {}).get("header")) or {})
+    try:
+        if "json" in ctype or body_preview.startswith("{"):
+            data = resp.json()
+            header = (data.get("response", {}) or {}).get("header", {}) or data.get("header", {})
+        else:
+            import xmltodict
+            data = xmltodict.parse(resp.text)
+            header = (((data.get("response") or {}).get("header")) or {})
+    except Exception:
+        # 본문 자체가 JSON/XML이 아님 (예: 순수 HTML 오류 페이지) -> HTTP 상태코드 + 본문 일부를 그대로 노출
+        raise ApiError(
+            f"HTTP {resp.status_code} - 응답을 JSON/XML로 파싱하지 못함. "
+            f"(url={resp.url}) 응답 본문 일부: {body_preview}"
+        )
 
-    result_code = str(header.get("resultCode", "00"))
+    result_code = str(header.get("resultCode", "" if resp.status_code >= 400 else "00"))
     # 정상 코드는 기관별로 "00" 또는 "0"인 경우가 있어 둘 다 허용
     if result_code not in ("00", "0"):
-        result_msg = header.get("resultMsg", "알 수 없는 오류")
-        raise ApiError(f"[{result_code}] {result_msg} (url={url})")
+        result_msg = header.get("resultMsg", f"HTTP {resp.status_code} (본문에서 resultMsg를 찾지 못함)")
+        raise ApiError(f"[{result_code}] {result_msg} (url={resp.url}) 응답 본문 일부: {body_preview}")
+
+    if resp.status_code >= 400:
+        raise ApiError(f"HTTP {resp.status_code} 오류 (url={resp.url}) 응답 본문 일부: {body_preview}")
 
     return data
 
