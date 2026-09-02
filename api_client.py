@@ -1,0 +1,143 @@
+# -*- coding: utf-8 -*-
+"""
+MFDS(식약처) 의약품 허가정보, HIRA(심평원) 약가정보 API 클라이언트.
+
+주의: 이 환경(대화 중 코드 작성 단계)에서는 data.go.kr 계열 도메인으로의
+실제 네트워크 호출을 테스트할 수 없다(허용 도메인 목록에 없음).
+아래 구현은 공개된 API 스펙(공공데이터포털 "의약품 개요정보(e약은요)" /
+"의약품 제품 허가정보" / "건강보험심사평가원_의약품 상한금액")을 기준으로 작성했으며,
+실제 서비스키로 로컬 또는 Streamlit Cloud에서 1회 스모크 테스트가 필요하다.
+
+- 서비스키는 코드에 하드코딩하지 않는다 (9장 절대 변경 금지 사항 9).
+  st.secrets["MFDS_SERVICE_KEY"] / st.secrets["HIRA_SERVICE_KEY"] 를 우선 사용하고,
+  없으면 st.text_input(type="password")로 입력받는다.
+"""
+import requests
+from urllib.parse import unquote
+
+MFDS_LIST_URL = "http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq07"
+MFDS_DETAIL_URL = "http://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnDtlInq06"
+HIRA_PRICE_URL = "http://apis.data.go.kr/B551182/dgamtInsrncListInfoInqireService/getDgamtList"
+
+DEFAULT_TIMEOUT = 15
+
+
+class ApiError(Exception):
+    """API가 HTTP 200이지만 resultCode(오류코드)가 정상이 아닌 경우를 명시적으로 드러내기 위한 예외."""
+    pass
+
+
+def _decode_key(service_key: str) -> str:
+    """공공데이터포털 서비스키는 이미 URL-encoded 상태로 발급되는 경우가 많아 이중 인코딩을 방지."""
+    if not service_key:
+        return service_key
+    return unquote(service_key)
+
+
+def _request_xml_or_json(url: str, params: dict) -> dict:
+    resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+    resp.raise_for_status()
+    ctype = resp.headers.get("Content-Type", "")
+
+    if "json" in ctype or resp.text.strip().startswith("{"):
+        data = resp.json()
+        header = (data.get("response", {}) or {}).get("header", {}) or data.get("header", {})
+    else:
+        import xmltodict
+        data = xmltodict.parse(resp.text)
+        header = (((data.get("response") or {}).get("header")) or {})
+
+    result_code = str(header.get("resultCode", "00"))
+    # 정상 코드는 기관별로 "00" 또는 "0"인 경우가 있어 둘 다 허용
+    if result_code not in ("00", "0"):
+        result_msg = header.get("resultMsg", "알 수 없는 오류")
+        raise ApiError(f"[{result_code}] {result_msg} (url={url})")
+
+    return data
+
+
+def _get_items(data: dict) -> list:
+    """공공데이터포털 표준 응답에서 items 리스트만 안전하게 추출. 0건이어도 빈 리스트를 반환(freeze 방지)."""
+    body = (((data.get("response") or {}).get("body")) or data.get("body") or {})
+    items = body.get("items") or {}
+    if isinstance(items, dict):
+        item = items.get("item")
+        if item is None:
+            return []
+        return item if isinstance(item, list) else [item]
+    if isinstance(items, list):
+        return items
+    return []
+
+
+def search_mfds_drugs(service_key: str, item_name: str = "", entp_name: str = "",
+                       page_no: int = 1, num_of_rows: int = 50, max_pages: int = 20) -> list:
+    """
+    MFDS 의약품 제품 허가정보 목록 조회.
+    totalCount가 0/누락으로 잘못 파싱돼도 무한루프에 빠지지 않도록 max_pages로 상한을 둔다.
+    """
+    key = _decode_key(service_key)
+    all_items = []
+    for page in range(page_no, page_no + max_pages):
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "pageNo": page,
+            "numOfRows": num_of_rows,
+        }
+        if item_name:
+            params["item_name"] = item_name
+        if entp_name:
+            params["entp_name"] = entp_name
+
+        data = _request_xml_or_json(MFDS_LIST_URL, params)
+        items = _get_items(data)
+        if not items:
+            break
+        all_items.extend(items)
+        if len(items) < num_of_rows:
+            break
+    return all_items
+
+
+def get_mfds_detail(service_key: str, item_seq: str) -> dict:
+    """MFDS 의약품 상세조회(허가사항 원문 NB_DOC_DATA 포함)."""
+    key = _decode_key(service_key)
+    params = {
+        "serviceKey": key,
+        "type": "json",
+        "item_seq": item_seq,
+    }
+    data = _request_xml_or_json(MFDS_DETAIL_URL, params)
+    items = _get_items(data)
+    return items[0] if items else {}
+
+
+def search_hira_price(service_key: str, item_name: str = "", mds_cd: str = "",
+                       page_no: int = 1, num_of_rows: int = 50, max_pages: int = 20) -> list:
+    """
+    HIRA 약가(상한금액) 조회. payTpNm != '삭제' 인 건만 유효한 것으로 필터링.
+    """
+    key = _decode_key(service_key)
+    all_items = []
+    for page in range(page_no, page_no + max_pages):
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "pageNo": page,
+            "numOfRows": num_of_rows,
+        }
+        if item_name:
+            params["itmNm"] = item_name
+        if mds_cd:
+            params["mdsCd"] = mds_cd
+
+        data = _request_xml_or_json(HIRA_PRICE_URL, params)
+        items = _get_items(data)
+        if not items:
+            break
+        all_items.extend(items)
+        if len(items) < num_of_rows:
+            break
+
+    return [row for row in all_items if row.get("payTpNm") != "삭제"]
