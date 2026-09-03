@@ -60,33 +60,15 @@ with tab1:
     st.markdown("MFDS 서비스키를 입력한 뒤 전체 목록을 한 번만 불러오면, 이후 검색은 매번 API를 "
                 "호출하지 않고 불러온 목록 안에서 즉시(로컬) 필터링됩니다. CSV 업로드 단계는 없습니다.")
 
-    if not mfds_key:
-        st.info("먼저 왼쪽 사이드바에 MFDS 서비스키를 입력하세요.")
-    else:
-        col_load, col_refresh = st.columns([3, 1])
-        with col_load:
-            if st.button("📥 식약처 전체 목록 불러오기 (하루 1회만 누르면 됩니다)", key="btn_load_full_list"):
-                try:
-                    with st.spinner("식약처 전체 목록을 불러오는 중입니다. 수만 건이라 몇 분 걸릴 수 있습니다..."):
-                        full_list = _load_full_mfds_list(mfds_key)
-                    st.session_state["mfds_full_list"] = full_list
-                    st.success(f"{len(full_list)}건 불러왔습니다. 오늘은 다시 누르지 않아도 됩니다.")
-                except api_client.ApiError as e:
-                    st.error(f"MFDS API 오류: {e}")
-                except Exception as e:
-                    st.error(f"조회 중 오류 발생: {e}")
-        with col_refresh:
-            if st.button("🔄 새로고침", key="btn_refresh_list",
-                         help="목록이 오래됐거나 오류가 의심될 때만 누르세요"):
-                _load_full_mfds_list.clear()
-                st.session_state.pop("mfds_full_list", None)
-                st.info("캐시를 비웠습니다. 위 버튼을 다시 눌러 새로 불러오세요.")
-
     full_list = st.session_state.get("mfds_full_list")
     results = []
+
+    query = st.text_input("제품명/성분명 검색", key="drug_search_query",
+                          disabled=not mfds_key,
+                          help="전체 목록을 불러온 상태면 즉시(로컬) 검색, 아니면 그때그때 API로 검색합니다")
+
     if full_list:
-        st.caption(f"현재 {len(full_list)}건이 로드되어 있습니다. 아래에서 검색하면 즉시 필터링됩니다.")
-        query = st.text_input("제품명/성분명/제조사 검색 (로컬 즉시검색)", key="drug_search_query")
+        st.caption(f"✅ 전체 목록 {len(full_list)}건이 로드되어 있어 검색이 즉시 처리됩니다.")
         if query:
             q = query.strip()
             results = [
@@ -97,7 +79,44 @@ with tab1:
             ]
             st.session_state["search_results"] = results
     else:
-        st.caption("전체 목록을 먼저 불러오면 이후 검색은 API 호출 없이 즉시 처리됩니다.")
+        st.caption("전체 목록을 아직 안 불러오셨습니다 — 검색하면 그때그때 API로 조회합니다 "
+                   "(느릴 수 있음). 자주 쓰실 거면 아래 '전체 목록 불러오기'를 눌러두세요.")
+        if st.button("검색", key="btn_search_live") and query:
+            try:
+                with st.spinner("MFDS 목록 조회 중..."):
+                    results = api_client.search_mfds_drugs(mfds_key, item_name=query)
+                st.session_state["search_results"] = results
+                if not results:
+                    st.warning("검색 결과가 없습니다.")
+            except api_client.ApiError as e:
+                st.error(f"MFDS API 오류: {e}")
+            except Exception as e:
+                st.error(f"조회 중 오류 발생: {e}")
+
+    st.divider()
+    if not mfds_key:
+        st.info("먼저 왼쪽 사이드바에 MFDS 서비스키를 입력하세요.")
+    else:
+        col_load, col_refresh = st.columns([3, 1])
+        with col_load:
+            if st.button("📥 전체 목록 불러오기 (검색을 자주 하실 거면 추천, 몇 분 걸림)", key="btn_load_full_list"):
+                try:
+                    with st.spinner("식약처 전체 목록을 불러오는 중입니다. 수만 건이라 몇 분 걸릴 수 있습니다..."):
+                        loaded = _load_full_mfds_list(mfds_key)
+                    st.session_state["mfds_full_list"] = loaded
+                    st.success(f"{len(loaded)}건 불러왔습니다. 오늘은 다시 누르지 않아도 됩니다.")
+                    st.rerun()
+                except api_client.ApiError as e:
+                    st.error(f"MFDS API 오류: {e}")
+                except Exception as e:
+                    st.error(f"조회 중 오류 발생: {e}")
+        with col_refresh:
+            if st.button("🔄 새로고침", key="btn_refresh_list",
+                         help="목록이 오래됐거나 오류가 의심될 때만 누르세요"):
+                _load_full_mfds_list.clear()
+                st.session_state.pop("mfds_full_list", None)
+                st.info("캐시를 비웠습니다.")
+                st.rerun()
 
     results = st.session_state.get("search_results", [])
     if results:
