@@ -84,6 +84,37 @@ def _get_items(data: dict) -> list:
     return []
 
 
+def fetch_all_mfds_products(service_key: str, num_of_rows: int = 100, max_pages: int = 400,
+                             progress_callback=None) -> list:
+    """
+    식약처 의약품 제품 허가정보 '전체' 목록을 여러 페이지에 걸쳐 가져온다.
+    item_name 없이 호출하므로 전체 허가 의약품(수만 건)이 대상이라 시간이 걸릴 수 있다.
+    하루 1회 정도만 호출하고, 이후 검색은 이 결과를 세션에 캐시해서 로컬에서 필터링하는
+    용도로 쓰기 위한 함수다 (매 검색마다 API를 다시 호출하지 않기 위함).
+
+    progress_callback(page, total_fetched)을 넘기면 페이지마다 호출되어 진행상황을 알릴 수 있다.
+    """
+    key = _decode_key(service_key)
+    all_items = []
+    for page in range(1, max_pages + 1):
+        params = {
+            "serviceKey": key,
+            "type": "json",
+            "pageNo": page,
+            "numOfRows": num_of_rows,
+        }
+        data = _request_xml_or_json(MFDS_LIST_URL, params)
+        items = _get_items(data)
+        if not items:
+            break
+        all_items.extend(items)
+        if progress_callback:
+            progress_callback(page, len(all_items))
+        if len(items) < num_of_rows:
+            break
+    return all_items
+
+
 def search_mfds_drugs(service_key: str, item_name: str = "", entp_name: str = "",
                        page_no: int = 1, num_of_rows: int = 50, max_pages: int = 20) -> list:
     """
