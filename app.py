@@ -35,22 +35,21 @@ _init_state()
 
 
 def get_service_keys():
-    mfds_key = st.secrets.get("MFDS_SERVICE_KEY", "") if hasattr(st, "secrets") else ""
-    hira_key = st.secrets.get("HIRA_SERVICE_KEY", "") if hasattr(st, "secrets") else ""
     with st.sidebar:
         st.subheader("API 인증키")
-        if not mfds_key:
-            mfds_key = st.text_input("MFDS 서비스키", type="password", key="mfds_key_input")
-        else:
-            st.caption("MFDS 서비스키: secrets에서 로드됨")
-        if not hira_key:
-            hira_key = st.text_input("HIRA 서비스키", type="password", key="hira_key_input")
-        else:
-            st.caption("HIRA 서비스키: secrets에서 로드됨")
+        st.caption("공공데이터포털에서 발급받은 '디코딩된' 서비스키를 입력하세요. 세션 동안만 유지됩니다.")
+        mfds_key = st.text_input("MFDS 서비스키", type="password", key="mfds_key_input")
+        hira_key = st.text_input("HIRA 서비스키", type="password", key="hira_key_input")
     return mfds_key, hira_key
 
 
 mfds_key, hira_key = get_service_keys()
+
+
+@st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
+def _load_full_mfds_list(service_key: str):
+    return api_client.fetch_all_mfds_products(service_key)
+
 
 tab1, tab2, tab3 = st.tabs(["🔍 의약품 조회", "📋 비교표 입력", "🧾 검증 · Claude 자료"])
 
@@ -58,24 +57,47 @@ tab1, tab2, tab3 = st.tabs(["🔍 의약품 조회", "📋 비교표 입력", "�
 # 탭 1: 의약품 조회 — 검색 → 신청/비교 선택 → 즉시 MFDS+HIRA 조회
 # ---------------------------------------------------------------------------
 with tab1:
-    st.markdown("검색 후 신청의약품 1개, 비교의약품 N개를 선택하면 즉시 MFDS/HIRA를 조회합니다. "
-                "CSV 업로드 단계는 없습니다.")
+    st.markdown("MFDS 서비스키를 입력한 뒤 전체 목록을 한 번만 불러오면, 이후 검색은 매번 API를 "
+                "호출하지 않고 불러온 목록 안에서 즉시(로컬) 필터링됩니다. CSV 업로드 단계는 없습니다.")
 
-    query = st.text_input("제품명/성분명 검색", key="drug_search_query")
-    if st.button("검색", key="btn_search") and query:
-        if not mfds_key:
-            st.error("MFDS 서비스키를 먼저 입력하세요.")
-        else:
-            try:
-                with st.spinner("MFDS 목록 조회 중..."):
-                    results = api_client.search_mfds_drugs(mfds_key, item_name=query)
-                st.session_state["search_results"] = results
-                if not results:
-                    st.warning("검색 결과가 없습니다.")
-            except api_client.ApiError as e:
-                st.error(f"MFDS API 오류: {e}")
-            except Exception as e:
-                st.error(f"조회 중 오류 발생: {e}")
+    if not mfds_key:
+        st.info("먼저 왼쪽 사이드바에 MFDS 서비스키를 입력하세요.")
+    else:
+        col_load, col_refresh = st.columns([3, 1])
+        with col_load:
+            if st.button("📥 식약처 전체 목록 불러오기 (하루 1회만 누르면 됩니다)", key="btn_load_full_list"):
+                try:
+                    with st.spinner("식약처 전체 목록을 불러오는 중입니다. 수만 건이라 몇 분 걸릴 수 있습니다..."):
+                        full_list = _load_full_mfds_list(mfds_key)
+                    st.session_state["mfds_full_list"] = full_list
+                    st.success(f"{len(full_list)}건 불러왔습니다. 오늘은 다시 누르지 않아도 됩니다.")
+                except api_client.ApiError as e:
+                    st.error(f"MFDS API 오류: {e}")
+                except Exception as e:
+                    st.error(f"조회 중 오류 발생: {e}")
+        with col_refresh:
+            if st.button("🔄 새로고침", key="btn_refresh_list",
+                         help="목록이 오래됐거나 오류가 의심될 때만 누르세요"):
+                _load_full_mfds_list.clear()
+                st.session_state.pop("mfds_full_list", None)
+                st.info("캐시를 비웠습니다. 위 버튼을 다시 눌러 새로 불러오세요.")
+
+    full_list = st.session_state.get("mfds_full_list")
+    results = []
+    if full_list:
+        st.caption(f"현재 {len(full_list)}건이 로드되어 있습니다. 아래에서 검색하면 즉시 필터링됩니다.")
+        query = st.text_input("제품명/성분명/제조사 검색 (로컬 즉시검색)", key="drug_search_query")
+        if query:
+            q = query.strip()
+            results = [
+                r for r in full_list
+                if q in (r.get("ITEM_NAME", "") or r.get("itemName", ""))
+                or q in (r.get("ENTP_NAME", "") or r.get("entpName", ""))
+                or q in (r.get("MAIN_ITEM_INGR", "") or "")
+            ]
+            st.session_state["search_results"] = results
+    else:
+        st.caption("전체 목록을 먼저 불러오면 이후 검색은 API 호출 없이 즉시 처리됩니다.")
 
     results = st.session_state.get("search_results", [])
     if results:
