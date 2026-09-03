@@ -15,9 +15,11 @@ MFDS(식약처) 의약품 허가정보, HIRA(심평원) 약가정보 API 클라�
 import requests
 from urllib.parse import unquote
 
-MFDS_LIST_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnInq07"
-MFDS_DETAIL_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService06/getDrugPrdtPrmsnDtlInq06"
-HIRA_PRICE_URL = "https://apis.data.go.kr/B551182/dgamtInsrncListInfoInqireService/getDgamtList"
+MFDS_LIST_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnInq07"
+# 상세조회(NB_DOC_DATA 등 허가사항 원문 포함) 엔드포인트는 미확인 상태입니다.
+# data.go.kr 15095677 페이지에서 실제 미리보기로 확인한 값으로 교체해야 합니다.
+MFDS_DETAIL_URL = "https://apis.data.go.kr/1471000/DrugPrdtPrmsnInfoService07/getDrugPrdtPrmsnDtlInq05"
+HIRA_PRICE_URL = "https://apis.data.go.kr/B551182/dgamtCrtrInfoService1.2/getDgamtList"
 
 DEFAULT_TIMEOUT = 15
 
