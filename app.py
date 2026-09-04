@@ -355,33 +355,67 @@ with tab3:
     else:
         product_names = result_df["허가제품명"].tolist()
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            applicant_name = st.selectbox("신청의약품", options=product_names, key="applicant_name_select")
-        with col_b:
-            comparator_names = st.multiselect(
-                "비교의약품", options=[n for n in product_names if n != applicant_name],
-                default=[n for n in product_names if n != applicant_name],
-                key="comparator_names_select",
-            )
+        # 비교표에 실제로 쓰인 제품(컬럼) 라벨들 — 예: "신청의약품","비교의약품1","비교의약품2","비교의약품3"
+        table_roles = sorted({e.get("product", "") for e in entries if e.get("product")})
 
-        # 조회 결과 DataFrame -> reference_data / reference_lookup 구성.
-        # 컬럼명(허가제품명/성분명/효능효과/용법용량/약가 + 선택한 부가항목 라벨)을 그대로 field 라벨로 사용.
+        st.subheader("역할 구성 — 함량별 여러 품목을 하나의 역할로 묶기")
+        st.caption("비교표에서 쓰인 제품 라벨마다, 조회 결과 중 해당하는 품목(함량별로 여러 개면 전부)을 선택하세요. "
+                   "예: '신청의약품' 역할에 나르코설하정 100/200/300마이크로그램 3개를 모두 선택.")
+
+        role_to_products = {}
+        for role in table_roles:
+            # 라벨과 이름이 비슷한 조회결과를 기본 선택값으로 추정 (완전 일치 아니어도 괜찮음, 사용자가 직접 조정)
+            guess = [p for p in product_names if any(tok in p for tok in role.replace("비교의약품", "").split() if tok)]
+            selected = st.multiselect(
+                f"「{role}」에 매핑할 조회 결과", options=product_names,
+                default=[p for p in product_names if p in guess] if guess else [],
+                key=f"role_map_{role}",
+            )
+            role_to_products[role] = selected
+
+        applicant_name = st.selectbox("이 중 '신청의약품' 역할은 어느 것입니까?", options=table_roles,
+                                      key="applicant_role_select")
+        comparator_names = [r for r in table_roles if r != applicant_name]
+
+        unmapped = [role for role, prods in role_to_products.items() if not prods]
+        if unmapped:
+            st.warning(f"아직 조회 결과가 매핑되지 않은 역할: {', '.join(unmapped)} — 매핑 안 하면 그 역할은 "
+                      "'확인불가'로 처리됩니다.")
+
+        # 여러 품목이 매핑된 역할은 값들을 합쳐서(중복은 제거) 하나의 참조자료로 구성.
+        # 예: 함량이 달라 값이 다르면 각각 다 보존되고, 효능효과처럼 강도와 무관하게 동일한 텍스트는 중복 제거됨.
+        def _merge_field_values(rows, col):
+            seen = []
+            for row in rows:
+                value = str(row.get(col, "") or "").strip()
+                if value and value not in seen:
+                    seen.append(value)
+            return "; ".join(seen)
+
         reference_data = {}
         reference_lookup = {}
-        for _, row in result_df.iterrows():
-            name = row["허가제품명"]
+        for role, prods in role_to_products.items():
+            matched_rows = [row for _, row in result_df.iterrows() if row["허가제품명"] in prods]
+            if not matched_rows:
+                reference_data[role] = {"mfds": {}, "hira": {}}
+                reference_lookup[role] = {}
+                continue
             mfds_fields = {}
+            flat = {}
             for col in result_df.columns:
                 if col in ("허가제품명", "약가"):
                     continue
-                mfds_fields[col] = {"label": col, "value": row.get(col, "")}
-            reference_data[name] = {
-                "mfds": mfds_fields,
-                "hira": {"약가": row.get("약가", "")},
-            }
-            flat = {col: row.get(col, "") for col in result_df.columns}
-            reference_lookup[name] = flat
+                merged = _merge_field_values(matched_rows, col)
+                mfds_fields[col] = {"label": col, "value": merged}
+                flat[col] = merged
+            price_merged = _merge_field_values(matched_rows, "약가")
+            # 제품명 자체는 함량별로 다 달라야 의미가 있으므로 원본 그대로 나열
+            product_names_merged = _merge_field_values(matched_rows, "허가제품명")
+            mfds_fields["해당 품목(함량별)"] = {"label": "해당 품목(함량별)", "value": product_names_merged}
+            flat["허가제품명"] = product_names_merged
+            reference_data[role] = {"mfds": mfds_fields, "hira": {"약가": price_merged}}
+            flat["약가"] = price_merged
+            reference_lookup[role] = flat
 
         st.divider()
         st.subheader("Python 1차 규칙 검증 (숫자·단위·기본정보·약가만 기계적으로 확정)")
